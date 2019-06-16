@@ -124,6 +124,7 @@ class AppStoreController extends AdminBaseController
 
             $result = $archive->extract(PCLZIP_OPT_PATH, WEB_ROOT.'plugins/');
 
+            
         }
 
 
