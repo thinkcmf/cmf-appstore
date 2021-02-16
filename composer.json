@@ -9,7 +9,7 @@
         }
     ],
     "require": {
-        
+        "chamilo/pclzip": "^2.8"
     },
     "autoload": {
         "psr-4": {
