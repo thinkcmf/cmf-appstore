@@ -10,35 +10,91 @@
 // +----------------------------------------------------------------------
 namespace app\admin\controller;
 
+use app\admin\logic\AppLogic;
 use app\admin\logic\PluginLogic;
 use app\admin\model\HookModel;
 use app\admin\model\PluginModel;
 use app\admin\model\HookPluginModel;
+use cmf\model\OptionModel;
 use cmf\paginator\Bootstrap;
 use Composer\Semver\VersionParser;
 use think\facade\Db;
 
-/**
- * 应用市场
- * @adminMenuRoot(
- *     'name'   =>'应用中心',
- *     'action' =>'default',
- *     'parent' =>'',
- *     'display'=> true,
- *     'order'  => 20,
- *     'icon'   =>'cloud-download',
- *     'remark' =>'应用市场'
- * )
- */
+
 class AppStoreController extends AppStoreAdminBaseController
 {
+
+    /**
+     * 应用市场
+     * @adminMenu(
+     *     'name'   => '应用市场',
+     *     'parent' => 'admin/Plugin/default',
+     *     'display'=> true,
+     *     'hasView'=> true,
+     *     'order'  => 10000,
+     *     'icon'   => '',
+     *     'remark' => '应用市场',
+     *     'param'  => ''
+     * )
+     */
+    public function apps()
+    {
+        $appStoreSettings = cmf_get_option('appstore_settings');
+        $accessToken      = '';
+        if (!empty($appStoreSettings['access_token'])) {
+            $accessToken = $appStoreSettings['access_token'];
+        }
+
+        $currentPage = $this->request->param('page', 1, 'intval');
+        $url         = "https://www.thinkcmf.com/api/appstore/apps?token={$accessToken}&page=" . $currentPage;
+        $data        = cmf_curl_get($url);
+
+        $data = json_decode($data, true);
+        $page = '';
+
+        if (empty($data['code'])) {
+            $apps = [];
+        } else {
+            $apps      = $data['data']['apps'];
+            $paginator = new Bootstrap([], 10, $currentPage, $data['data']['total'], false, ['path' => $this->request->baseUrl()]);
+            $page      = $paginator->render();
+        }
+
+        $appstoreSettings = cmf_get_option('appstore_settings');
+
+
+        $newApps = [];
+        foreach ($apps as $mApp) {
+            $mApp['installed']   = 0;
+            $mApp['need_update'] = 0;
+            $appName             = $mApp['name'];
+            $optionName          = "app_manifest_" . $appName;
+            $findAppSetting      = OptionModel::where('option_name', "app_manifest_" . $appName)->find();
+
+            if (!empty($findAppSetting)) {
+                $installedApp          = $findAppSetting['option_value'];
+                $mApp['installed']     = 1;
+                $mApp['need_update']   = $installedApp['version'] == $mApp['version'] ? 0 : 1;
+                $mApp['installed_app'] = $installedApp;
+            }
+
+            $newApps[] = $mApp;
+        }
+
+        $this->assign('apps', $newApps);
+        $this->assign('appstore_settings', $appstoreSettings);
+
+
+        $this->assign('page', $page);
+        return $this->fetch();
+    }
 
     /**
      * 插件市场
      * @adminMenu(
      *     'name'   => '插件市场',
-     *     'parent' => 'default',
-     *     'display'=> true,
+     *     'parent' => 'admin/Plugin/default',
+     *     'display'=> false,
      *     'hasView'=> true,
      *     'order'  => 10000,
      *     'icon'   => '',
@@ -170,6 +226,8 @@ class AppStoreController extends AppStoreAdminBaseController
             curl_setopt($ch, CURLOPT_FILE, $fp);
             curl_setopt($ch, CURLOPT_HEADER, 0);
             curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // 信任任何证书
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2); // 检查证书中是否设置域名
             $res = curl_exec($ch);
             curl_close($ch);
             fclose($fp);
@@ -208,6 +266,96 @@ class AppStoreController extends AppStoreAdminBaseController
             $this->success('升级成功！');
         }
     }
+
+    public function installApp()
+    {
+        $appStoreSettings = cmf_get_option('appstore_settings');
+        $accessToken      = '';
+        if (!empty($appStoreSettings['access_token'])) {
+            $accessToken = $appStoreSettings['access_token'];
+        }
+
+        $dirs = [
+            realpath(CMF_ROOT . 'api') . DIRECTORY_SEPARATOR,
+            realpath(CMF_ROOT . 'app') . DIRECTORY_SEPARATOR,
+            realpath(CMF_ROOT . 'data') . DIRECTORY_SEPARATOR,
+            realpath(WEB_ROOT . 'plugins') . DIRECTORY_SEPARATOR,
+            realpath(WEB_ROOT . 'themes') . DIRECTORY_SEPARATOR,
+            realpath(WEB_ROOT . 'themes/admin_simpleboot3') . DIRECTORY_SEPARATOR,
+        ];
+
+        foreach ($dirs as $dir) {
+            if (!cmf_test_write($dir)) {
+                $this->error('目录不可写' . $dir);
+            }
+        }
+
+        $id      = $this->request->param('id', 0, 'intval');
+        $version = $this->request->param('version', '', 'urlencode');
+        $data    = cmf_curl_get("https://www.thinkcmf.com/api/appstore/apps/{$id}?token=$accessToken&version=$version");
+        $data    = json_decode($data, true);
+
+        if (empty($data['code'])) {
+            if (!empty($data['data']['code']) && $data['data']['code'] == 10001) {
+                cmf_set_option('appstore_settings', ['access_token' => '']);
+                $this->error($data['msg'], null, ['code' => 10001]);
+            }
+
+            if (!empty($data['data']['code']) && $data['data']['code'] == 10002) {
+                $this->error($data['msg'], null, ['code' => 10002]);
+            }
+        } else {
+            $tmpFileName = "app{$id}_" . time() . microtime() . '.zip';
+
+            $tmpFileDir = CMF_DATA . 'download/';
+
+            if (!is_dir($tmpFileDir)) {
+                mkdir($tmpFileDir, 0777, true);
+            }
+
+            $tmpFile = $tmpFileDir . $tmpFileName;
+            $fp = fopen($tmpFile, 'wb') or $this->error('操作失败！'); //新建或打开文件,将curl下载的文件写入文件
+
+            $ch = curl_init($data['data']['app']['download_url']);
+            curl_setopt($ch, CURLOPT_FILE, $fp);
+            curl_setopt($ch, CURLOPT_HEADER, 0);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // 信任任何证书
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2); // 检查证书中是否设置域名
+            $res = curl_exec($ch);
+            curl_close($ch);
+            fclose($fp);
+
+            $appName = $data['data']['app']['name'];
+
+            $archive = new \PclZip($tmpFile);
+
+            $files = $archive->listContent();
+
+            foreach ($files as $mFile) {
+                $result = $archive->extractByIndex($mFile['index'], PCLZIP_OPT_PATH, CMF_ROOT, PCLZIP_OPT_REMOVE_PATH, "{$data['data']['app']['name']}/");
+            }
+
+            unlink($tmpFile);
+
+            if (empty($version)) {
+                $result = AppLogic::install($appName);
+            } else {
+                $result = AppLogic::update($appName);
+            }
+
+            if ($result !== true) {
+                $this->error($result);
+            }
+
+        }
+        if (empty($version)) {
+            $this->success('安装成功，请刷新网页！');
+        } else {
+            $this->success('升级成功，请刷新网页！');
+        }
+    }
+
 
 //    public function test()
 //    {
