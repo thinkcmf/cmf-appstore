@@ -13,6 +13,8 @@ namespace app\admin;
 use app\admin\command\PublishApp;
 use app\admin\command\PublishPlugin;
 use app\admin\command\PublishTheme;
+use app\admin\command\UninstallApp;
+use app\admin\command\UninstallPlugin;
 use think\Service;
 
 class AppStoreService extends Service
@@ -24,6 +26,8 @@ class AppStoreService extends Service
             PublishApp::class,
             PublishPlugin::class,
             PublishTheme::class,
+            UninstallApp::class,
+            UninstallPlugin::class,
         ]);
     }
 
